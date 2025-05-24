@@ -51,8 +51,9 @@ export function ScheduleManager() {
   const createSchedule = useMutation({
     mutationFn: async (data: ScheduleFormData) => {
       const urlArray = data.urls.split('\n').filter(url => url.trim());
-      return apiRequest("/api/schedules", {
+      const response = await fetch("/api/schedules", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: data.name,
           urls: urlArray,
@@ -60,6 +61,8 @@ export function ScheduleManager() {
           cronExpression: data.cronExpression || null,
         }),
       });
+      if (!response.ok) throw new Error("Failed to create schedule");
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
@@ -81,10 +84,13 @@ export function ScheduleManager() {
 
   const toggleSchedule = useMutation({
     mutationFn: async ({ id, isActive }: { id: number; isActive: boolean }) => {
-      return apiRequest(`/api/schedules/${id}`, {
+      const response = await fetch(`/api/schedules/${id}`, {
         method: "PUT",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isActive }),
       });
+      if (!response.ok) throw new Error("Failed to update schedule");
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
@@ -97,9 +103,11 @@ export function ScheduleManager() {
 
   const deleteSchedule = useMutation({
     mutationFn: async (id: number) => {
-      return apiRequest(`/api/schedules/${id}`, {
+      const response = await fetch(`/api/schedules/${id}`, {
         method: "DELETE",
       });
+      if (!response.ok) throw new Error("Failed to delete schedule");
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
@@ -112,9 +120,11 @@ export function ScheduleManager() {
 
   const triggerSchedule = useMutation({
     mutationFn: async (id: number) => {
-      return apiRequest(`/api/schedules/${id}/trigger`, {
+      const response = await fetch(`/api/schedules/${id}/trigger`, {
         method: "POST",
       });
+      if (!response.ok) throw new Error("Failed to trigger schedule");
+      return response.json();
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
