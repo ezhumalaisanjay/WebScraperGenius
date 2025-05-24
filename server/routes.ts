@@ -59,33 +59,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 async function scrapeWebsite(jobId: number, url: string) {
   try {
     await storage.updateScrapingJob(jobId, { status: "processing" });
-
-    let browser;
-    let page;
-    let usePuppeteer = true;
-
-    try {
-      browser = await puppeteer.launch({ 
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--single-process',
-          '--disable-gpu'
-        ]
-      });
-      page = await browser.newPage();
-      
-      // Set user agent to avoid being blocked
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    } catch (puppeteerError) {
-      console.warn('Puppeteer failed, falling back to HTTP scraping:', puppeteerError);
-      usePuppeteer = false;
-    }
+    console.log('Starting HTTP-based web scraping for:', url);
     
     const results: ScrapingResults = {
       website: {},
@@ -99,24 +73,14 @@ async function scrapeWebsite(jobId: number, url: string) {
     };
 
     try {
-      let homeContent;
-      let $;
-      
-      if (usePuppeteer) {
-        // Scrape homepage with Puppeteer
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-        homeContent = await page.content();
-      } else {
-        // Fallback to HTTP scraping
-        const response = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-          }
-        });
-        homeContent = await response.text();
-      }
-      
-      $ = cheerio.load(homeContent);
+      // HTTP-based scraping approach
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+      });
+      const homeContent = await response.text();
+      const $ = cheerio.load(homeContent);
       
       // Extract homepage data
       results.website.home = {
@@ -151,20 +115,13 @@ async function scrapeWebsite(jobId: number, url: string) {
       // Scrape specific sections
       for (const link of Array.from(internalLinks).slice(0, 10)) { // Limit to avoid too many requests
         try {
-          let sectionContent;
-          
-          if (usePuppeteer && page) {
-            await page.goto(link, { waitUntil: 'networkidle2', timeout: 15000 });
-            sectionContent = await page.content();
-          } else {
-            // HTTP fallback
-            const response = await fetch(link, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-              }
-            });
-            sectionContent = await response.text();
-          }
+          // HTTP scraping for internal pages
+          const response = await fetch(link, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+          });
+          const sectionContent = await response.text();
           
           const section$ = cheerio.load(sectionContent);
           
@@ -201,7 +158,7 @@ async function scrapeWebsite(jobId: number, url: string) {
       // Scrape LinkedIn if URL found
       if (results.website.social_media?.linkedin_url) {
         try {
-          await scrapeLinkedIn(page, results.website.social_media.linkedin_url, results, usePuppeteer);
+          await scrapeLinkedIn(results.website.social_media.linkedin_url, results);
         } catch (linkedinError) {
           console.warn("Failed to scrape LinkedIn:", linkedinError);
         }
@@ -213,10 +170,6 @@ async function scrapeWebsite(jobId: number, url: string) {
     } catch (scrapeError) {
       console.error("Scraping error:", scrapeError);
       throw scrapeError;
-    } finally {
-      if (browser) {
-        await browser.close();
-      }
     }
 
     await storage.updateScrapingJob(jobId, { 
@@ -234,24 +187,15 @@ async function scrapeWebsite(jobId: number, url: string) {
   }
 }
 
-async function scrapeLinkedIn(page: any, linkedinUrl: string, results: ScrapingResults, usePuppeteer: boolean = true) {
+async function scrapeLinkedIn(linkedinUrl: string, results: ScrapingResults) {
   try {
-    let content;
-    
-    if (usePuppeteer && page) {
-      await page.goto(linkedinUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-      await page.waitForTimeout(2000); // Wait for content to load
-      content = await page.content();
-    } else {
-      // HTTP fallback for LinkedIn
-      const response = await fetch(linkedinUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-      });
-      content = await response.text();
-    }
-    
+    // HTTP scraping for LinkedIn
+    const response = await fetch(linkedinUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      }
+    });
+    const content = await response.text();
     const $ = cheerio.load(content);
     
     results.linkedin.home = {
