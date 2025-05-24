@@ -443,7 +443,7 @@ async function scrapeLinkedIn(linkedinUrl: string, results: ScrapingResults) {
     await new Promise(resolve => setTimeout(resolve, getRandomDelay('linkedin_delay')));
     
     // Use enhanced fetch with rotation for LinkedIn
-    const response = await enhancedFetch(linkedinUrl);
+    const response = await enhancedFetch(linkedinUrl, {}, 3, 'linkedin-scraper');
     const content = await response.text();
     const $ = cheerio.load(content);
     
