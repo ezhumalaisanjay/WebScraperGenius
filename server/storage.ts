@@ -73,6 +73,8 @@ export class MemStorage implements IStorage {
       nextRun: this.calculateNextRun(insertSchedule.frequency, insertSchedule.cronExpression),
       createdAt: new Date(),
       updatedAt: new Date(),
+      cronExpression: insertSchedule.cronExpression || null,
+      settings: insertSchedule.settings || null,
     };
     this.schedules.set(id, schedule);
     return schedule;
