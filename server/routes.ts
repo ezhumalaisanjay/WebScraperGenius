@@ -60,23 +60,32 @@ async function scrapeWebsite(jobId: number, url: string) {
   try {
     await storage.updateScrapingJob(jobId, { status: "processing" });
 
-    const browser = await puppeteer.launch({ 
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu'
-      ]
-    });
-    const page = await browser.newPage();
-    
-    // Set user agent to avoid being blocked
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    let browser;
+    let page;
+    let usePuppeteer = true;
+
+    try {
+      browser = await puppeteer.launch({ 
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--single-process',
+          '--disable-gpu'
+        ]
+      });
+      page = await browser.newPage();
+      
+      // Set user agent to avoid being blocked
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    } catch (puppeteerError) {
+      console.warn('Puppeteer failed, falling back to HTTP scraping:', puppeteerError);
+      usePuppeteer = false;
+    }
     
     const results: ScrapingResults = {
       website: {},
@@ -90,10 +99,24 @@ async function scrapeWebsite(jobId: number, url: string) {
     };
 
     try {
-      // Scrape homepage
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-      const homeContent = await page.content();
-      const $ = cheerio.load(homeContent);
+      let homeContent;
+      let $;
+      
+      if (usePuppeteer) {
+        // Scrape homepage with Puppeteer
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        homeContent = await page.content();
+      } else {
+        // Fallback to HTTP scraping
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+          }
+        });
+        homeContent = await response.text();
+      }
+      
+      $ = cheerio.load(homeContent);
       
       // Extract homepage data
       results.website.home = {
@@ -128,44 +151,45 @@ async function scrapeWebsite(jobId: number, url: string) {
       // Scrape specific sections
       for (const link of Array.from(internalLinks).slice(0, 10)) { // Limit to avoid too many requests
         try {
-          if (link.includes('/about')) {
+          let sectionContent;
+          
+          if (usePuppeteer && page) {
             await page.goto(link, { waitUntil: 'networkidle2', timeout: 15000 });
-            const aboutContent = await page.content();
-            const about$ = cheerio.load(aboutContent);
-            
+            sectionContent = await page.content();
+          } else {
+            // HTTP fallback
+            const response = await fetch(link, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+              }
+            });
+            sectionContent = await response.text();
+          }
+          
+          const section$ = cheerio.load(sectionContent);
+          
+          if (link.includes('/about')) {
             results.website.about = {
-              company_name: extractCompanyName(about$),
-              founding_year: extractFoundingYear(about$('body').text()),
-              about_summary: await generateAISummary(about$('body').text().substring(0, 3000), 'about page'),
+              company_name: extractCompanyName(section$),
+              founding_year: extractFoundingYear(section$('body').text()),
+              about_summary: await generateAISummary(section$('body').text().substring(0, 3000), 'about page'),
             };
             results.stats!.sectionsFound++;
           } else if (link.includes('/service') || link.includes('/solution')) {
-            await page.goto(link, { waitUntil: 'networkidle2', timeout: 15000 });
-            const servicesContent = await page.content();
-            const services$ = cheerio.load(servicesContent);
-            
             results.website.services = {
-              services_summary: await generateAISummary(services$('body').text().substring(0, 3000), 'services page'),
+              services_summary: await generateAISummary(section$('body').text().substring(0, 3000), 'services page'),
             };
             results.stats!.sectionsFound++;
           } else if (link.includes('/product')) {
-            await page.goto(link, { waitUntil: 'networkidle2', timeout: 15000 });
-            const productsContent = await page.content();
-            const products$ = cheerio.load(productsContent);
-            
             results.website.products = {
-              products_summary: await generateAISummary(products$('body').text().substring(0, 3000), 'products page'),
+              products_summary: await generateAISummary(section$('body').text().substring(0, 3000), 'products page'),
             };
             results.stats!.sectionsFound++;
           } else if (link.includes('/contact')) {
-            await page.goto(link, { waitUntil: 'networkidle2', timeout: 15000 });
-            const contactContent = await page.content();
-            const contact$ = cheerio.load(contactContent);
-            
             results.website.contact = {
-              email_addresses: extractEmails(contact$('body').text()),
-              phone_numbers: extractPhoneNumbers(contact$('body').text()),
-              office_locations: extractLocations(contact$('body').text()),
+              email_addresses: extractEmails(section$('body').text()),
+              phone_numbers: extractPhoneNumbers(section$('body').text()),
+              office_locations: extractLocations(section$('body').text()),
             };
             results.stats!.sectionsFound++;
           }
@@ -177,7 +201,7 @@ async function scrapeWebsite(jobId: number, url: string) {
       // Scrape LinkedIn if URL found
       if (results.website.social_media?.linkedin_url) {
         try {
-          await scrapeLinkedIn(page, results.website.social_media.linkedin_url, results);
+          await scrapeLinkedIn(page, results.website.social_media.linkedin_url, results, usePuppeteer);
         } catch (linkedinError) {
           console.warn("Failed to scrape LinkedIn:", linkedinError);
         }
@@ -190,7 +214,9 @@ async function scrapeWebsite(jobId: number, url: string) {
       console.error("Scraping error:", scrapeError);
       throw scrapeError;
     } finally {
-      await browser.close();
+      if (browser) {
+        await browser.close();
+      }
     }
 
     await storage.updateScrapingJob(jobId, { 
@@ -208,12 +234,24 @@ async function scrapeWebsite(jobId: number, url: string) {
   }
 }
 
-async function scrapeLinkedIn(page: any, linkedinUrl: string, results: ScrapingResults) {
+async function scrapeLinkedIn(page: any, linkedinUrl: string, results: ScrapingResults, usePuppeteer: boolean = true) {
   try {
-    await page.goto(linkedinUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-    await page.waitForTimeout(2000); // Wait for content to load
+    let content;
     
-    const content = await page.content();
+    if (usePuppeteer && page) {
+      await page.goto(linkedinUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+      await page.waitForTimeout(2000); // Wait for content to load
+      content = await page.content();
+    } else {
+      // HTTP fallback for LinkedIn
+      const response = await fetch(linkedinUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+      });
+      content = await response.text();
+    }
+    
     const $ = cheerio.load(content);
     
     results.linkedin.home = {
