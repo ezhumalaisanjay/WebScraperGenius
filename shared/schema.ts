@@ -10,14 +10,40 @@ export const scrapingJobs = pgTable("scraping_jobs", {
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
+  scheduleId: integer("schedule_id"), // Link to scheduled jobs
+});
+
+export const scrapingSchedules = pgTable("scraping_schedules", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  urls: jsonb("urls").notNull(), // Array of URLs to scrape
+  frequency: text("frequency").notNull(), // daily, weekly, monthly, custom
+  cronExpression: text("cron_expression"), // For custom schedules
+  isActive: boolean("is_active").default(true),
+  lastRun: timestamp("last_run"),
+  nextRun: timestamp("next_run"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  settings: jsonb("settings"), // Additional automation settings
 });
 
 export const insertScrapingJobSchema = createInsertSchema(scrapingJobs).pick({
   url: true,
+  scheduleId: true,
+});
+
+export const insertScrapingScheduleSchema = createInsertSchema(scrapingSchedules).pick({
+  name: true,
+  urls: true,
+  frequency: true,
+  cronExpression: true,
+  settings: true,
 });
 
 export type InsertScrapingJob = z.infer<typeof insertScrapingJobSchema>;
 export type ScrapingJob = typeof scrapingJobs.$inferSelect;
+export type InsertScrapingSchedule = z.infer<typeof insertScrapingScheduleSchema>;
+export type ScrapingSchedule = typeof scrapingSchedules.$inferSelect;
 
 // Zod schemas for validation
 export const websiteDataSchema = z.object({

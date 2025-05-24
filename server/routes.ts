@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertScrapingJobSchema, scrapingResultsSchema, type ScrapingResults } from "@shared/schema";
+import { insertScrapingJobSchema, insertScrapingScheduleSchema, scrapingResultsSchema, type ScrapingResults, type ScrapingSchedule } from "@shared/schema";
 import { z } from "zod";
 // Removed puppeteer import - using HTTP-based scraping instead
 import * as cheerio from "cheerio";
@@ -295,8 +295,221 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // SCHEDULING ENDPOINTS
+  
+  // Create a new scraping schedule
+  app.post("/api/schedules", async (req, res) => {
+    try {
+      const scheduleData = insertScrapingScheduleSchema.parse(req.body);
+      const schedule = await storage.createSchedule(scheduleData);
+      
+      console.log(`📅 Created new schedule: ${schedule.name} (${schedule.frequency})`);
+      res.json(schedule);
+    } catch (error) {
+      console.error("Error creating schedule:", error);
+      res.status(400).json({ message: "Invalid schedule data" });
+    }
+  });
+
+  // Get all schedules
+  app.get("/api/schedules", async (req, res) => {
+    try {
+      const schedules = await storage.getAllSchedules();
+      res.json(schedules);
+    } catch (error) {
+      console.error("Error fetching schedules:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Get specific schedule
+  app.get("/api/schedules/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const schedule = await storage.getSchedule(id);
+      
+      if (!schedule) {
+        return res.status(404).json({ message: "Schedule not found" });
+      }
+      
+      res.json(schedule);
+    } catch (error) {
+      console.error("Error fetching schedule:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Update schedule
+  app.put("/api/schedules/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updates = req.body;
+      const schedule = await storage.updateSchedule(id, updates);
+      
+      if (!schedule) {
+        return res.status(404).json({ message: "Schedule not found" });
+      }
+      
+      console.log(`📅 Updated schedule: ${schedule.name}`);
+      res.json(schedule);
+    } catch (error) {
+      console.error("Error updating schedule:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Delete schedule
+  app.delete("/api/schedules/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const deleted = await storage.deleteSchedule(id);
+      
+      if (!deleted) {
+        return res.status(404).json({ message: "Schedule not found" });
+      }
+      
+      console.log(`🗑️ Deleted schedule ID: ${id}`);
+      res.json({ message: "Schedule deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting schedule:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Trigger scheduled jobs manually
+  app.post("/api/schedules/:id/trigger", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const schedule = await storage.getSchedule(id);
+      
+      if (!schedule) {
+        return res.status(404).json({ message: "Schedule not found" });
+      }
+      
+      console.log(`🚀 Manually triggering schedule: ${schedule.name}`);
+      const jobs = await executeScheduledJobs([schedule]);
+      
+      res.json({ 
+        message: "Schedule triggered successfully", 
+        jobsCreated: jobs.length,
+        jobs: jobs 
+      });
+    } catch (error) {
+      console.error("Error triggering schedule:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   const httpServer = createServer(app);
+  
+  // Start the scheduling automation system
+  startSchedulingSystem();
+  
   return httpServer;
+}
+
+// SCHEDULING AUTOMATION SYSTEM
+async function executeScheduledJobs(schedules: ScrapingSchedule[]) {
+  const createdJobs = [];
+  
+  for (const schedule of schedules) {
+    try {
+      console.log(`🔄 Executing schedule: ${schedule.name}`);
+      
+      // Create jobs for each URL in the schedule
+      const urls = Array.isArray(schedule.urls) ? schedule.urls : [schedule.urls];
+      
+      for (const url of urls) {
+        const job = await storage.createScrapingJob({ 
+          url: url as string, 
+          scheduleId: schedule.id 
+        });
+        createdJobs.push(job);
+        
+        // Start scraping in the background
+        scrapeWebsite(job.id, url as string).catch(error => {
+          console.error(`Error in scheduled scraping for ${url}:`, error);
+        });
+      }
+      
+      // Update schedule's last run and next run
+      await storage.updateSchedule(schedule.id, {
+        lastRun: new Date(),
+        nextRun: calculateNextRun(schedule.frequency, schedule.cronExpression)
+      });
+      
+    } catch (error) {
+      console.error(`Error executing schedule ${schedule.name}:`, error);
+    }
+  }
+  
+  return createdJobs;
+}
+
+function calculateNextRun(frequency: string, cronExpression?: string | null): Date {
+  const now = new Date();
+  
+  if (cronExpression) {
+    // Basic cron parsing for common patterns
+    return parseCronExpression(cronExpression, now);
+  }
+  
+  switch (frequency) {
+    case 'daily':
+      return new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    case 'weekly':
+      return new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    case 'monthly':
+      const nextMonth = new Date(now);
+      nextMonth.setMonth(nextMonth.getMonth() + 1);
+      return nextMonth;
+    case 'hourly':
+      return new Date(now.getTime() + 60 * 60 * 1000);
+    default:
+      return new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  }
+}
+
+function parseCronExpression(cronExpr: string, fromDate: Date): Date {
+  // Basic cron parsing - for common patterns like "0 9 * * *" (daily at 9 AM)
+  const parts = cronExpr.split(' ');
+  if (parts.length !== 5) {
+    return new Date(fromDate.getTime() + 24 * 60 * 60 * 1000);
+  }
+  
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+  const nextRun = new Date(fromDate);
+  
+  // Set specific hour and minute if provided
+  if (hour !== '*') {
+    nextRun.setHours(parseInt(hour), parseInt(minute || '0'), 0, 0);
+  }
+  
+  // If the time has passed today, move to tomorrow
+  if (nextRun <= fromDate) {
+    nextRun.setDate(nextRun.getDate() + 1);
+  }
+  
+  return nextRun;
+}
+
+function startSchedulingSystem() {
+  console.log('🕒 Starting scheduling automation system...');
+  
+  // Check for due schedules every minute
+  setInterval(async () => {
+    try {
+      const dueSchedules = await storage.getSchedulesDue();
+      if (dueSchedules.length > 0) {
+        console.log(`📅 Found ${dueSchedules.length} schedules due for execution`);
+        await executeScheduledJobs(dueSchedules);
+      }
+    } catch (error) {
+      console.error('Error checking scheduled jobs:', error);
+    }
+  }, 60000); // Check every minute
+  
+  console.log('✅ Scheduling system started - checking every minute for due schedules');
 }
 
 async function scrapeWebsite(jobId: number, url: string) {
