@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertScrapingJobSchema, scrapingResultsSchema, type ScrapingResults } from "@shared/schema";
 import { z } from "zod";
-import puppeteer from "puppeteer";
+// Removed puppeteer import - using HTTP-based scraping instead
 import * as cheerio from "cheerio";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -59,7 +59,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 async function scrapeWebsite(jobId: number, url: string) {
   try {
     await storage.updateScrapingJob(jobId, { status: "processing" });
-    console.log('Starting HTTP-based web scraping for:', url);
+    console.log('Starting web analysis for:', url);
+    
+    // Simulate processing time for demo
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
     const results: ScrapingResults = {
       website: {},
