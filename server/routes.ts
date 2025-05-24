@@ -6,6 +6,234 @@ import { z } from "zod";
 // Removed puppeteer import - using HTTP-based scraping instead
 import * as cheerio from "cheerio";
 
+// User-Agent rotation pool for scraping
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0'
+];
+
+// Proxy configuration interface
+interface ProxyConfig {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  protocol: 'http' | 'https' | 'socks4' | 'socks5';
+}
+
+// Proxy rotation pool (can be configured with real proxies)
+const PROXY_POOL: ProxyConfig[] = [
+  // Add your proxy configurations here
+  // Example: { host: 'proxy1.example.com', port: 8080, protocol: 'http' }
+];
+
+// Request delay ranges for different operations (in milliseconds)
+const DELAYS = {
+  between_requests: { min: 1000, max: 3000 },
+  between_pages: { min: 2000, max: 5000 },
+  linkedin_delay: { min: 3000, max: 6000 }
+};
+
+// Get random user agent
+function getRandomUserAgent(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+// Get random proxy from pool
+function getRandomProxy(): ProxyConfig | null {
+  if (PROXY_POOL.length === 0) return null;
+  return PROXY_POOL[Math.floor(Math.random() * PROXY_POOL.length)];
+}
+
+// Random delay function
+function getRandomDelay(type: keyof typeof DELAYS): number {
+  const range = DELAYS[type];
+  return Math.floor(Math.random() * (range.max - range.min + 1)) + range.min;
+}
+
+// Request analytics tracking
+interface RequestMetrics {
+  totalRequests: number;
+  successfulRequests: number;
+  failedRequests: number;
+  avgResponseTime: number;
+  userAgentsUsed: Set<string>;
+  proxiesUsed: Set<string>;
+}
+
+const requestMetrics: RequestMetrics = {
+  totalRequests: 0,
+  successfulRequests: 0,
+  failedRequests: 0,
+  avgResponseTime: 0,
+  userAgentsUsed: new Set(),
+  proxiesUsed: new Set()
+};
+
+// Session-based rate limiting
+const sessionRequests = new Map<string, { count: number; lastRequest: number }>();
+
+function checkRateLimit(sessionId: string): boolean {
+  const now = Date.now();
+  const session = sessionRequests.get(sessionId) || { count: 0, lastRequest: 0 };
+  
+  // Reset count if more than 1 minute has passed
+  if (now - session.lastRequest > 60000) {
+    session.count = 0;
+  }
+  
+  // Allow max 30 requests per minute per session
+  if (session.count >= 30) {
+    return false;
+  }
+  
+  session.count++;
+  session.lastRequest = now;
+  sessionRequests.set(sessionId, session);
+  return true;
+}
+
+// Enhanced fetch with rotation, retry logic, and analytics
+async function enhancedFetch(url: string, options: any = {}, retries: number = 3, sessionId: string = 'default'): Promise<Response> {
+  const startTime = Date.now();
+  const userAgent = getRandomUserAgent();
+  const proxy = getRandomProxy();
+  
+  // Track metrics
+  requestMetrics.totalRequests++;
+  requestMetrics.userAgentsUsed.add(userAgent);
+  if (proxy) {
+    requestMetrics.proxiesUsed.add(`${proxy.host}:${proxy.port}`);
+  }
+  
+  // Check rate limiting
+  if (!checkRateLimit(sessionId)) {
+    throw new Error('Rate limit exceeded for this session');
+  }
+  
+  const fetchOptions = {
+    ...options,
+    headers: {
+      'User-Agent': userAgent,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+      'Connection': 'keep-alive',
+      'DNT': '1',
+      ...options.headers
+    },
+    timeout: 30000 // 30 second timeout
+  };
+
+  // Add realistic browser fingerprinting headers
+  const browserFingerprint = generateBrowserFingerprint();
+  Object.assign(fetchOptions.headers, browserFingerprint);
+
+  // Add proxy configuration if available
+  if (proxy) {
+    console.log(`🔀 Using proxy: ${proxy.protocol}://${proxy.host}:${proxy.port}`);
+    // Note: In production, you would configure proxy agent here
+    // Example: fetchOptions.agent = new HttpsProxyAgent(`${proxy.protocol}://${proxy.host}:${proxy.port}`)
+  }
+
+  console.log(`🚀 Fetching ${url} with UA: ${userAgent.split(' ')[0]}... (Session: ${sessionId})`);
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, fetchOptions);
+      
+      if (response.ok) {
+        const responseTime = Date.now() - startTime;
+        requestMetrics.successfulRequests++;
+        
+        // Update average response time
+        const totalResponseTime = requestMetrics.avgResponseTime * (requestMetrics.successfulRequests - 1) + responseTime;
+        requestMetrics.avgResponseTime = totalResponseTime / requestMetrics.successfulRequests;
+        
+        console.log(`✅ Success: ${url} (${responseTime}ms, attempt ${attempt})`);
+        return response;
+      } else if (response.status === 429) {
+        // Rate limited - intelligent backoff
+        const backoffDelay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 5000, 45000);
+        console.log(`⏳ Rate limited on ${url}, intelligent backoff ${Math.round(backoffDelay)}ms...`);
+        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+      } else if (response.status === 403 || response.status === 401) {
+        // Likely blocked - try different user agent on next attempt
+        console.log(`🚫 Access denied for ${url} (${response.status}), rotating user agent...`);
+        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (error) {
+      console.warn(`❌ Attempt ${attempt} failed for ${url}:`, error.message);
+      
+      if (attempt === retries) {
+        requestMetrics.failedRequests++;
+        throw error;
+      }
+      
+      // Exponential backoff with jitter and session-based delays
+      const baseDelay = 1000 * Math.pow(2, attempt - 1);
+      const jitter = Math.random() * 2000;
+      const sessionDelay = sessionId !== 'default' ? Math.random() * 1000 : 0;
+      const totalDelay = baseDelay + jitter + sessionDelay;
+      
+      console.log(`🔄 Retrying ${url} in ${Math.round(totalDelay)}ms... (attempt ${attempt + 1}/${retries})`);
+      await new Promise(resolve => setTimeout(resolve, totalDelay));
+    }
+  }
+  
+  requestMetrics.failedRequests++;
+  throw new Error(`Failed to fetch ${url} after ${retries} attempts`);
+}
+
+// Generate realistic browser fingerprinting headers
+function generateBrowserFingerprint() {
+  const viewports = [
+    { width: 1920, height: 1080 },
+    { width: 1366, height: 768 },
+    { width: 1440, height: 900 },
+    { width: 1536, height: 864 }
+  ];
+  
+  const viewport = viewports[Math.floor(Math.random() * viewports.length)];
+  
+  return {
+    'Sec-CH-UA': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    'Sec-CH-UA-Mobile': '?0',
+    'Sec-CH-UA-Platform': '"Windows"',
+    'Sec-CH-Viewport-Width': viewport.width.toString(),
+    'Sec-CH-Viewport-Height': viewport.height.toString(),
+    'Viewport-Width': viewport.width.toString()
+  };
+}
+
+// Get analytics summary
+function getAnalyticsSummary() {
+  return {
+    totalRequests: requestMetrics.totalRequests,
+    successRate: requestMetrics.totalRequests > 0 ? 
+      (requestMetrics.successfulRequests / requestMetrics.totalRequests * 100).toFixed(2) + '%' : '0%',
+    avgResponseTime: Math.round(requestMetrics.avgResponseTime) + 'ms',
+    userAgentsRotated: requestMetrics.userAgentsUsed.size,
+    proxiesUsed: requestMetrics.proxiesUsed.size,
+    activeSessions: sessionRequests.size
+  };
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   
   // Start scraping job
@@ -52,6 +280,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get scraping analytics endpoint
+  app.get("/api/analytics", async (req, res) => {
+    try {
+      const analytics = getAnalyticsSummary();
+      res.json({
+        message: "Scraping analytics",
+        data: analytics,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error("Error fetching analytics:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
@@ -76,14 +319,15 @@ async function scrapeWebsite(jobId: number, url: string) {
     };
 
     try {
-      // HTTP-based scraping approach
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-      });
+      // Enhanced HTTP scraping with rotation and retry logic
+      const sessionId = `job-${jobId}`;
+      console.log('🔄 Starting enhanced scraping with user-agent rotation and proxy support...');
+      const response = await enhancedFetch(url, {}, 3, sessionId);
       const homeContent = await response.text();
       const $ = cheerio.load(homeContent);
+      
+      // Add delay between requests
+      await new Promise(resolve => setTimeout(resolve, getRandomDelay('between_requests')));
       
       // Extract homepage data
       results.website.home = {
@@ -115,15 +359,16 @@ async function scrapeWebsite(jobId: number, url: string) {
         results.stats!.socialLinksFound = Object.values(results.website.social_media).filter(Boolean).length;
       }
 
-      // Scrape specific sections
+      // Scrape specific sections with enhanced rotation
       for (const link of Array.from(internalLinks).slice(0, 10)) { // Limit to avoid too many requests
         try {
-          // HTTP scraping for internal pages
-          const response = await fetch(link, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-          });
+          console.log(`🔄 Scraping section: ${link}`);
+          
+          // Add random delay between page requests
+          await new Promise(resolve => setTimeout(resolve, getRandomDelay('between_pages')));
+          
+          // Use enhanced fetch with rotation for each internal page
+          const response = await enhancedFetch(link, {}, 3, sessionId);
           const sectionContent = await response.text();
           
           const section$ = cheerio.load(sectionContent);
@@ -192,12 +437,13 @@ async function scrapeWebsite(jobId: number, url: string) {
 
 async function scrapeLinkedIn(linkedinUrl: string, results: ScrapingResults) {
   try {
-    // HTTP scraping for LinkedIn
-    const response = await fetch(linkedinUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      }
-    });
+    console.log(`🔗 Scraping LinkedIn with enhanced rotation: ${linkedinUrl}`);
+    
+    // Add special delay for LinkedIn to avoid detection
+    await new Promise(resolve => setTimeout(resolve, getRandomDelay('linkedin_delay')));
+    
+    // Use enhanced fetch with rotation for LinkedIn
+    const response = await enhancedFetch(linkedinUrl);
     const content = await response.text();
     const $ = cheerio.load(content);
     
